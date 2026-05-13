@@ -2,6 +2,12 @@
 name = "vigen"
 version = "0.1.0"
 edition = "2021"
+description = "Vision + Gen — CLI tool for text-only models to access vision AI (Google Gemini) and image generation (OpenAI)"
+license = "MIT"
+repository = "https://github.com/trtyr/vigen"
+readme = "README.md"
+keywords = ["vision", "image-generation", "cli", "gemini", "openai"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
