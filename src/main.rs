@@ -12,8 +12,8 @@ use base64::Engine;
 #[derive(Parser)]
 #[command(
     name = "vigen",
-    about = "Vision + Gen — AI visual assistant",
-    long_about = "A lightweight helper that gives text-only models access to vision AI and image generation."
+    about = "Gemini vision + GPT image generation",
+    long_about = "A lightweight helper that gives text-only models access to Google Gemini (vision) and OpenAI GPT (image generation)."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -22,18 +22,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Analyze an image with a vision model
+    /// Analyze an image with Google Gemini
     See {
         /// Path to the image file (png, jpg, webp, gif, bmp)
         #[arg(short, long)]
         image: String,
 
-        /// Text prompt for the vision model
+        /// Text prompt for Gemini (default: "Describe this image in detail")
         #[arg(short, long, default_value = "Describe this image in detail")]
         prompt: String,
     },
 
-    /// Generate an image from a text prompt
+    /// Generate an image with OpenAI GPT (DALL·E)
     Gen {
         /// Text prompt describing the image to generate
         #[arg(short, long)]
