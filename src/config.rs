@@ -35,13 +35,10 @@ impl<'de> Deserialize<'de> for ProviderType {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct VigenConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
-
-    #[serde(default)]
-    pub defaults: DefaultsConfig,
 
     #[serde(default)]
     pub providers: ProviderConfigs,
@@ -53,32 +50,6 @@ pub struct VigenConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProxyConfig {
     pub url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DefaultsConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vision: Option<ProviderType>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vision_fallback: Option<ProviderType>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_gen: Option<ProviderType>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub image_gen_fallback: Option<ProviderType>,
-}
-
-impl Default for DefaultsConfig {
-    fn default() -> Self {
-        Self {
-            vision: Some(ProviderType::Google),
-            vision_fallback: None,
-            image_gen: Some(ProviderType::Gpt),
-            image_gen_fallback: None,
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -129,10 +100,6 @@ fn default_google_model() -> String {
 }
 
 fn default_gpt_model() -> String {
-    "gpt-4o".to_string()
-}
-
-fn default_gpt_gen_model() -> String {
     "gpt-image-2".to_string()
 }
 
@@ -151,12 +118,6 @@ pub struct GptConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_model: Option<String>,
-
-    #[serde(default = "default_gpt_gen_model")]
-    pub gen_model: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gen_fallback_model: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
@@ -193,17 +154,6 @@ impl VigenConfig {
     }
 }
 
-impl Default for VigenConfig {
-    fn default() -> Self {
-        Self {
-            proxy: None,
-            defaults: DefaultsConfig::default(),
-            providers: ProviderConfigs::default(),
-            auth: None,
-        }
-    }
-}
-
 pub fn resolve_proxy(
     provider_proxy: Option<&str>,
     global_proxy: Option<&ProxyConfig>,
@@ -230,19 +180,10 @@ mod tests {
     fn sample_gpt_config() -> GptConfig {
         GptConfig {
             api_key: Some("c-key-456".into()),
-            model: "gpt-4o".into(),
-            fallback_model: Some("gpt-4o-mini".into()),
-            gen_model: "gpt-image-2".into(),
-            gen_fallback_model: None,
+            model: "gpt-image-2".into(),
+            fallback_model: None,
             proxy: None,
         }
-    }
-
-    #[test]
-    fn test_default_config_has_google_vision() {
-        let cfg = VigenConfig::default();
-        assert_eq!(cfg.defaults.vision, Some(ProviderType::Google));
-        assert!(cfg.defaults.vision_fallback.is_none());
     }
 
     #[test]
@@ -273,8 +214,8 @@ mod tests {
         let round: VigenConfig = toml::from_str(&toml_str).unwrap();
         let c = round.providers.gpt.unwrap();
         assert_eq!(c.api_key.unwrap(), "c-key-456");
-        assert_eq!(c.model, "gpt-4o");
-        assert_eq!(c.fallback_model.unwrap(), "gpt-4o-mini");
+        assert_eq!(c.model, "gpt-image-2");
+        assert!(c.fallback_model.is_none());
     }
 
     #[test]
@@ -286,18 +227,6 @@ mod tests {
         let round: VigenConfig = toml::from_str(&toml_str).unwrap();
         assert!(round.providers.google.is_some());
         assert!(round.providers.gpt.is_some());
-    }
-
-    #[test]
-    fn test_roundtrip_with_defaults() {
-        let mut cfg = VigenConfig::default();
-        cfg.defaults.vision = Some(ProviderType::Gpt);
-        cfg.defaults.vision_fallback = Some(ProviderType::Google);
-        cfg.providers.gpt = Some(sample_gpt_config());
-        let toml_str = toml::to_string_pretty(&cfg).unwrap();
-        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(round.defaults.vision, Some(ProviderType::Gpt));
-        assert_eq!(round.defaults.vision_fallback, Some(ProviderType::Google));
     }
 
     #[test]
@@ -330,21 +259,6 @@ mod tests {
         let auth = round.auth.unwrap();
         assert_eq!(auth.google.unwrap().refresh_token, "rtok");
         assert_eq!(auth.gpt.unwrap().refresh_token, "ctok");
-    }
-
-    #[test]
-    fn test_provider_type_serialization_in_table() {
-        let cfg = VigenConfig::default();
-        let s = toml::to_string_pretty(&cfg).unwrap();
-        assert!(s.contains("vision = \"google\""), "defaults vision serializes: {s}");
-    }
-
-    #[test]
-    fn test_provider_type_deserialize_from_toml() {
-        let toml_str = "[defaults]\n            vision = \"gpt\"\nvision_fallback = \"google\"\n";
-        let cfg: VigenConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.defaults.vision, Some(ProviderType::Gpt));
-        assert_eq!(cfg.defaults.vision_fallback, Some(ProviderType::Google));
     }
 
     #[test]

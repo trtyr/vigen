@@ -31,10 +31,6 @@ enum Commands {
         /// Text prompt for the vision model
         #[arg(short, long, default_value = "Describe this image in detail")]
         prompt: String,
-
-        /// Vision provider to use (google, gpt). Uses config default if omitted.
-        #[arg(long)]
-        provider: Option<String>,
     },
 
     /// Generate an image from a text prompt
@@ -54,10 +50,6 @@ enum Commands {
         /// Directory to save generated images
         #[arg(short, long, default_value = ".")]
         output: String,
-
-        /// Image generation provider. Uses config default if omitted.
-        #[arg(long)]
-        provider: Option<String>,
     },
 
     /// Manage authentication
@@ -71,16 +63,7 @@ enum Commands {
         /// Provider name (google, gpt)
         provider: String,
 
-        /// Model name to use (e.g. gemini-2.0-flash, gpt-4o)
-        model: String,
-    },
-
-    /// Set the image generation model for a provider
-    GenModel {
-        /// Provider name (gpt)
-        provider: String,
-
-        /// Model name for image generation (e.g. gpt-image-2)
+        /// Model name to use (e.g. gemini-2.0-flash, gpt-image-2)
         model: String,
     },
 
@@ -154,17 +137,12 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
         Commands::See {
             image,
             prompt,
-            provider,
         } => {
-            let pt = provider
-                .as_deref()
-                .map(ProviderType::parse)
-                .transpose()?;
             let cfg = config::VigenConfig::load()?;
             let image_data = std::fs::read(&image)
                 .map_err(|e| anyhow::anyhow!("cannot read image '{image}': {e}"))?;
             let mime = detect_mime(&image)?;
-            let result = providers::analyze_image(pt, &cfg, &image_data, mime, &prompt).await?;
+            let result = providers::analyze_image(&cfg, &image_data, mime, &prompt).await?;
             println!("{result}");
         }
         Commands::Gen {
@@ -172,14 +150,9 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
             size,
             n,
             output,
-            provider,
         } => {
-            let pt = provider
-                .as_deref()
-                .map(ProviderType::parse)
-                .transpose()?;
             let cfg = config::VigenConfig::load()?;
-            let images = providers::generate_image(pt, &cfg, &prompt, &size, n).await?;
+            let images = providers::generate_image(&cfg, &prompt, &size, n).await?;
             for (i, b64) in images.iter().enumerate() {
                 let data = base64::engine::general_purpose::STANDARD
                     .decode(b64)
@@ -200,7 +173,7 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                 let pt = ProviderType::parse(&provider)?;
                 let mut cfg = config::VigenConfig::load()?;
                 let proxy = cfg.proxy.as_ref().map(|p| p.url.clone());
-                providers::login(pt, &mut cfg, proxy).await?;
+                providers::login(pt, &mut cfg, proxy.as_deref()).await?;
                 println!("Login successful!");
             }
             AuthAction::Key { provider, api_key } => {
@@ -223,10 +196,8 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                         let gpt = cfg.providers.gpt.get_or_insert_with(|| {
                             config::GptConfig {
                                 api_key: None,
-                                model: "gpt-4o".into(),
+                                model: "gpt-image-2".into(),
                                 fallback_model: None,
-                                gen_model: "gpt-image-2".into(),
-                                gen_fallback_model: None,
                                 proxy: None,
                             }
                         });
@@ -258,8 +229,6 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                         api_key: None,
                         model: String::new(),
                         fallback_model: None,
-                        gen_model: "gpt-image-2".into(),
-                        gen_fallback_model: None,
                         proxy: None,
                     });
                     gpt.model = model;
@@ -267,28 +236,6 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
             }
             cfg.save()?;
             println!("{provider} model updated");
-        }
-        Commands::GenModel { provider, model } => {
-            let pt = ProviderType::parse(&provider)?;
-            let mut cfg = config::VigenConfig::load()?;
-            match pt {
-                ProviderType::Gpt => {
-                    let gpt = cfg.providers.gpt.get_or_insert_with(|| config::GptConfig {
-                        api_key: None,
-                        model: "gpt-4o".into(),
-                        fallback_model: None,
-                        gen_model: String::new(),
-                        gen_fallback_model: None,
-                        proxy: None,
-                    });
-                    gpt.gen_model = model;
-                }
-                ProviderType::Google => {
-                    anyhow::bail!("Google does not support image generation")
-                }
-            }
-            cfg.save()?;
-            println!("{provider} gen model updated");
         }
         Commands::Models { provider } => {
             let pt = ProviderType::parse(&provider)?;

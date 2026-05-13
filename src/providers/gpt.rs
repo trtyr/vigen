@@ -1,11 +1,8 @@
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 
 use crate::config::{resolve_proxy, GptConfig, VigenConfig};
 use crate::error::VigenError;
-
-use super::VisionProvider;
 
 pub struct GptProvider {
     api_key: String,
@@ -41,58 +38,6 @@ impl GptProvider {
         let mut p = Self::from_config(full)?;
         p.model = model.to_string();
         Ok(p)
-    }
-
-    pub fn from_config_with_gen_model(full: &VigenConfig, model: &str) -> Result<Self, VigenError> {
-        let mut p = Self::from_config(full)?;
-        p.model = model.to_string();
-        Ok(p)
-    }
-}
-
-#[async_trait]
-impl VisionProvider for GptProvider {
-    async fn analyze_image(
-        &self,
-        image_data: &[u8],
-        mime_type: &str,
-        prompt: &str,
-    ) -> Result<String, VigenError> {
-        let b64 = BASE64.encode(image_data);
-        let data_url = format!("data:{mime_type};base64,{b64}");
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": data_url, "detail": "auto"}}
-                ]
-            }]
-        });
-        let response = self
-            .client
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await?;
-            return Err(VigenError::ApiError {
-                status,
-                message: body,
-            });
-        }
-        let resp: serde_json::Value = response.json().await?;
-        let text = resp["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| VigenError::ApiError {
-                status: 200,
-                message: "empty response".into(),
-            })?;
-        Ok(text.to_string())
     }
 }
 
@@ -158,10 +103,8 @@ pub fn login_with_api_key(config: &mut VigenConfig) -> Result<(), VigenError> {
     }
     let gpt_cfg = config.providers.gpt.get_or_insert_with(|| GptConfig {
         api_key: None,
-        model: "gpt-4o".into(),
+        model: "gpt-image-2".into(),
         fallback_model: None,
-        gen_model: "gpt-image-2".into(),
-        gen_fallback_model: None,
         proxy: None,
     });
     gpt_cfg.api_key = Some(api_key);

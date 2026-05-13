@@ -85,14 +85,6 @@ pub struct ModelInfo {
     pub name: String,
     #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub supported_generation_methods: Vec<String>,
-    #[serde(default)]
-    pub input_token_limit: Option<u64>,
-    #[serde(default)]
-    pub output_token_limit: Option<u64>,
 }
 
 pub struct GoogleProvider {
@@ -196,7 +188,7 @@ impl GoogleProvider {
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, VigenError> {
         let response = self
             .client
-            .get(&self.make_url("/models"))
+            .get(self.make_url("/models"))
             .send()
             .await?;
 
