@@ -13,7 +13,7 @@ use base64::Engine;
 #[command(
     name = "vigen",
     about = "Vision + Gen — AI visual assistant",
-    long_about = "A lightweight helper that gives text-only models access to vision AI (and later, image generation)."
+    long_about = "A lightweight helper that gives text-only models access to vision AI and image generation."
 )]
 struct Cli {
     #[command(subcommand)]
