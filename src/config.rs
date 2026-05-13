@@ -3,10 +3,45 @@ use std::path::PathBuf;
 
 use crate::error::VigenError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderType {
+    Google,
+    Gpt,
+}
+
+impl ProviderType {
+    pub fn parse(s: &str) -> Result<Self, VigenError> {
+        match s.to_lowercase().as_str() {
+            "google" | "gemini" => Ok(Self::Google),
+            "gpt" | "openai" => Ok(Self::Gpt),
+            other => Err(VigenError::Config(format!("unknown provider: {other}"))),
+        }
+    }
+}
+
+impl Serialize for ProviderType {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            ProviderType::Google => "google",
+            ProviderType::Gpt => "gpt",
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ProviderType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        ProviderType::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VigenConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyConfig>,
+
+    #[serde(default)]
+    pub defaults: DefaultsConfig,
 
     #[serde(default)]
     pub providers: ProviderConfigs,
@@ -20,16 +55,48 @@ pub struct ProxyConfig {
     pub url: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DefaultsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision: Option<ProviderType>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision_fallback: Option<ProviderType>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_gen: Option<ProviderType>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_gen_fallback: Option<ProviderType>,
+}
+
+impl Default for DefaultsConfig {
+    fn default() -> Self {
+        Self {
+            vision: Some(ProviderType::Google),
+            vision_fallback: None,
+            image_gen: Some(ProviderType::Gpt),
+            image_gen_fallback: None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ProviderConfigs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub google: Option<GoogleConfig>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpt: Option<GptConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AuthConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub google: Option<GoogleAuth>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpt: Option<GptAuth>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -48,6 +115,9 @@ pub struct GoogleConfig {
     pub model: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_model: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +126,40 @@ pub struct GoogleConfig {
 
 fn default_google_model() -> String {
     "gemini-2.0-flash".to_string()
+}
+
+fn default_gpt_model() -> String {
+    "gpt-4o".to_string()
+}
+
+fn default_gpt_gen_model() -> String {
+    "gpt-image-2".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GptAuth {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GptConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    #[serde(default = "default_gpt_model")]
+    pub model: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_model: Option<String>,
+
+    #[serde(default = "default_gpt_gen_model")]
+    pub gen_model: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gen_fallback_model: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
 }
 
 impl VigenConfig {
@@ -93,6 +197,7 @@ impl Default for VigenConfig {
     fn default() -> Self {
         Self {
             proxy: None,
+            defaults: DefaultsConfig::default(),
             providers: ProviderConfigs::default(),
             auth: None,
         }
@@ -106,4 +211,181 @@ pub fn resolve_proxy(
     provider_proxy
         .map(String::from)
         .or_else(|| global_proxy.map(|p| p.url.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_google_config() -> GoogleConfig {
+        GoogleConfig {
+            api_key: Some("g-key-123".into()),
+            model: "gemini-2.0-flash".into(),
+            fallback_model: Some("gemini-1.5-flash".into()),
+            proxy: None,
+            project: None,
+        }
+    }
+
+    fn sample_gpt_config() -> GptConfig {
+        GptConfig {
+            api_key: Some("c-key-456".into()),
+            model: "gpt-4o".into(),
+            fallback_model: Some("gpt-4o-mini".into()),
+            gen_model: "gpt-image-2".into(),
+            gen_fallback_model: None,
+            proxy: None,
+        }
+    }
+
+    #[test]
+    fn test_default_config_has_google_vision() {
+        let cfg = VigenConfig::default();
+        assert_eq!(cfg.defaults.vision, Some(ProviderType::Google));
+        assert!(cfg.defaults.vision_fallback.is_none());
+    }
+
+    #[test]
+    fn test_default_config_empty_providers() {
+        let cfg = VigenConfig::default();
+        assert!(cfg.providers.google.is_none());
+        assert!(cfg.providers.gpt.is_none());
+        assert!(cfg.auth.is_none());
+    }
+
+    #[test]
+    fn test_roundtrip_google_only() {
+        let mut cfg = VigenConfig::default();
+        cfg.providers.google = Some(sample_google_config());
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
+        let g = round.providers.google.unwrap();
+        assert_eq!(g.api_key.unwrap(), "g-key-123");
+        assert_eq!(g.model, "gemini-2.0-flash");
+        assert_eq!(g.fallback_model.unwrap(), "gemini-1.5-flash");
+    }
+
+    #[test]
+    fn test_roundtrip_gpt_only() {
+        let mut cfg = VigenConfig::default();
+        cfg.providers.gpt = Some(sample_gpt_config());
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
+        let c = round.providers.gpt.unwrap();
+        assert_eq!(c.api_key.unwrap(), "c-key-456");
+        assert_eq!(c.model, "gpt-4o");
+        assert_eq!(c.fallback_model.unwrap(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_roundtrip_both_providers() {
+        let mut cfg = VigenConfig::default();
+        cfg.providers.google = Some(sample_google_config());
+        cfg.providers.gpt = Some(sample_gpt_config());
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
+        assert!(round.providers.google.is_some());
+        assert!(round.providers.gpt.is_some());
+    }
+
+    #[test]
+    fn test_roundtrip_with_defaults() {
+        let mut cfg = VigenConfig::default();
+        cfg.defaults.vision = Some(ProviderType::Gpt);
+        cfg.defaults.vision_fallback = Some(ProviderType::Google);
+        cfg.providers.gpt = Some(sample_gpt_config());
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(round.defaults.vision, Some(ProviderType::Gpt));
+        assert_eq!(round.defaults.vision_fallback, Some(ProviderType::Google));
+    }
+
+    #[test]
+    fn test_roundtrip_with_proxy() {
+        let mut cfg = VigenConfig::default();
+        cfg.proxy = Some(ProxyConfig {
+            url: "http://127.0.0.1:7890".into(),
+        });
+        cfg.providers.google = Some(sample_google_config());
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(round.proxy.unwrap().url, "http://127.0.0.1:7890");
+    }
+
+    #[test]
+    fn test_roundtrip_with_auth() {
+        let mut cfg = VigenConfig::default();
+        cfg.auth = Some(AuthConfig {
+            google: Some(GoogleAuth {
+                client_id: "cid".into(),
+                client_secret: "csec".into(),
+                refresh_token: "rtok".into(),
+            }),
+            gpt: Some(GptAuth {
+                refresh_token: "ctok".into(),
+            }),
+        });
+        let toml_str = toml::to_string_pretty(&cfg).unwrap();
+        let round: VigenConfig = toml::from_str(&toml_str).unwrap();
+        let auth = round.auth.unwrap();
+        assert_eq!(auth.google.unwrap().refresh_token, "rtok");
+        assert_eq!(auth.gpt.unwrap().refresh_token, "ctok");
+    }
+
+    #[test]
+    fn test_provider_type_serialization_in_table() {
+        let cfg = VigenConfig::default();
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        assert!(s.contains("vision = \"google\""), "defaults vision serializes: {s}");
+    }
+
+    #[test]
+    fn test_provider_type_deserialize_from_toml() {
+        let toml_str = "[defaults]\n            vision = \"gpt\"\nvision_fallback = \"google\"\n";
+        let cfg: VigenConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.defaults.vision, Some(ProviderType::Gpt));
+        assert_eq!(cfg.defaults.vision_fallback, Some(ProviderType::Google));
+    }
+
+    #[test]
+    fn test_provider_type_deserialize_unknown() {
+        let result: Result<ProviderType, _> = toml::from_str("\"anthropic\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_proxy_provider_wins() {
+        let result = resolve_proxy(
+            Some("http://p.proxy:8080"),
+            Some(&ProxyConfig {
+                url: "http://global.proxy:8080".into(),
+            }),
+        );
+        assert_eq!(result.unwrap(), "http://p.proxy:8080");
+    }
+
+    #[test]
+    fn test_resolve_proxy_falls_back_to_global() {
+        let result = resolve_proxy(
+            None,
+            Some(&ProxyConfig {
+                url: "http://global.proxy:8080".into(),
+            }),
+        );
+        assert_eq!(result.unwrap(), "http://global.proxy:8080");
+    }
+
+    #[test]
+    fn test_resolve_proxy_none() {
+        let result = resolve_proxy(None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_config_path_ends_with_vigen_config_toml() {
+        let path = VigenConfig::config_path();
+        let s = path.to_string_lossy();
+        assert!(s.contains("vigen"), "path must contain vigen: {s}");
+        assert!(s.ends_with("config.toml"), "path must end with config.toml: {s}");
+    }
 }

@@ -1,12 +1,13 @@
-mod auth;
 mod config;
 mod error;
+mod pkce;
 mod providers;
 
 use std::path::Path;
 
 use clap::{Parser, Subcommand};
-use providers::VisionProvider;
+use config::ProviderType;
+use base64::Engine;
 
 #[derive(Parser)]
 #[command(
@@ -30,16 +31,100 @@ enum Commands {
         /// Text prompt for the vision model
         #[arg(short, long, default_value = "Describe this image in detail")]
         prompt: String,
+
+        /// Vision provider to use (google, gpt). Uses config default if omitted.
+        #[arg(long)]
+        provider: Option<String>,
     },
 
-    /// Manage vigen configuration
+    /// Generate an image from a text prompt
+    Gen {
+        /// Text prompt describing the image to generate
+        #[arg(short, long)]
+        prompt: String,
+
+        /// Image size (1024x1024, 1024x1536, 1536x1024)
+        #[arg(long, default_value = "1024x1024")]
+        size: String,
+
+        /// Number of images to generate (1-4)
+        #[arg(long, default_value = "1")]
+        n: u8,
+
+        /// Directory to save generated images
+        #[arg(short, long, default_value = ".")]
+        output: String,
+
+        /// Image generation provider. Uses config default if omitted.
+        #[arg(long)]
+        provider: Option<String>,
+    },
+
+    /// Manage authentication
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+
+    /// Set the default model for a provider
+    Model {
+        /// Provider name (google, gpt)
+        provider: String,
+
+        /// Model name to use (e.g. gemini-2.0-flash, gpt-4o)
+        model: String,
+    },
+
+    /// Set the image generation model for a provider
+    GenModel {
+        /// Provider name (gpt)
+        provider: String,
+
+        /// Model name for image generation (e.g. gpt-image-2)
+        model: String,
+    },
+
+    /// List available models for a provider
+    Models {
+        /// Provider name (google, gpt)
+        #[arg(long, default_value = "google")]
+        provider: String,
+    },
+
+    /// Set global proxy URL (e.g. http://127.0.0.1:7890)
+    Proxy {
+        url: String,
+    },
+
+    /// Set GCP project ID (google only, for OAuth mode)
+    Project {
+        project_id: String,
+    },
+
+    /// Manage the config file itself
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
+}
 
-    /// Login to Google via browser OAuth
-    Login,
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Login to an AI provider
+    Login {
+        /// Provider to login to (google, codex)
+        #[arg(long, default_value = "google")]
+        provider: String,
+    },
+
+    /// Set API key directly
+    Key {
+        /// Provider name (google, gpt)
+        provider: String,
+
+        /// API key
+        api_key: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -52,29 +137,6 @@ enum ConfigAction {
 
     /// Write a fresh config template to disk
     Init,
-
-    /// Set Google API key
-    SetKey {
-        api_key: String,
-    },
-
-    /// Set global proxy URL (e.g. http://127.0.0.1:7890)
-    SetProxy {
-        url: String,
-    },
-
-    /// Set Google model
-    SetModel {
-        model: String,
-    },
-
-    /// Set GCP project ID (for OAuth mode)
-    SetProject {
-        project_id: String,
-    },
-
-    /// List available Gemini models
-    ListModels,
 }
 
 #[tokio::main]
@@ -89,132 +151,200 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<(), anyhow::Error> {
     match cli.command {
-        Commands::See { image, prompt } => cmd_see(&image, &prompt).await?,
-        Commands::Config { action } => cmd_config(action).await?,
-        Commands::Login => cmd_login().await?,
-    }
-    Ok(())
-}
-
-async fn cmd_see(image_path: &str, prompt: &str) -> Result<(), anyhow::Error> {
-    let cfg = config::VigenConfig::load()?;
-
-    let image_data = std::fs::read(image_path)
-        .map_err(|e| anyhow::anyhow!("cannot read image '{}': {e}", image_path))?;
-
-    let mime = detect_mime(image_path)?;
-
-            let provider = providers::google::GoogleProvider::from_config(&cfg)?;
-
-    let result = provider.analyze_image(&image_data, mime, prompt).await?;
-
-    println!("{result}");
-    Ok(())
-}
-
-async fn cmd_config(action: ConfigAction) -> Result<(), anyhow::Error> {
-    let path = config::VigenConfig::config_path();
-
-    match action {
-        ConfigAction::Show => {
+        Commands::See {
+            image,
+            prompt,
+            provider,
+        } => {
+            let pt = provider
+                .as_deref()
+                .map(ProviderType::parse)
+                .transpose()?;
             let cfg = config::VigenConfig::load()?;
-            let text = toml::to_string_pretty(&cfg)?;
-            println!("{text}");
+            let image_data = std::fs::read(&image)
+                .map_err(|e| anyhow::anyhow!("cannot read image '{image}': {e}"))?;
+            let mime = detect_mime(&image)?;
+            let result = providers::analyze_image(pt, &cfg, &image_data, mime, &prompt).await?;
+            println!("{result}");
         }
-        ConfigAction::Path => {
-            println!("{}", path.display());
-        }
-        ConfigAction::Init => {
-            if path.exists() {
-                anyhow::bail!("config already exists at {}", path.display());
+        Commands::Gen {
+            prompt,
+            size,
+            n,
+            output,
+            provider,
+        } => {
+            let pt = provider
+                .as_deref()
+                .map(ProviderType::parse)
+                .transpose()?;
+            let cfg = config::VigenConfig::load()?;
+            let images = providers::generate_image(pt, &cfg, &prompt, &size, n).await?;
+            for (i, b64) in images.iter().enumerate() {
+                let data = base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .map_err(|e| anyhow::anyhow!("invalid base64 in image response: {e}"))?;
+                let filename = if images.len() > 1 {
+                    format!("vigen_gen_{:02}.png", i + 1)
+                } else {
+                    "vigen_gen.png".to_string()
+                };
+                let path = std::path::Path::new(&output).join(&filename);
+                std::fs::write(&path, &data)
+                    .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
+                println!("{}", path.display());
             }
-            config::VigenConfig::default().save()?;
-            println!("created {}", path.display());
         }
-        ConfigAction::SetKey { api_key } => {
+        Commands::Auth { action } => match action {
+            AuthAction::Login { provider } => {
+                let pt = ProviderType::parse(&provider)?;
+                let mut cfg = config::VigenConfig::load()?;
+                let proxy = cfg.proxy.as_ref().map(|p| p.url.clone());
+                providers::login(pt, &mut cfg, proxy).await?;
+                println!("Login successful!");
+            }
+            AuthAction::Key { provider, api_key } => {
+                let pt = ProviderType::parse(&provider)?;
+                let mut cfg = config::VigenConfig::load()?;
+                match pt {
+                    ProviderType::Google => {
+                        let google = cfg.providers.google.get_or_insert_with(|| {
+                            config::GoogleConfig {
+                                api_key: None,
+                                model: "gemini-2.0-flash".into(),
+                                fallback_model: None,
+                                proxy: None,
+                                project: None,
+                            }
+                        });
+                        google.api_key = Some(api_key);
+                    }
+                    ProviderType::Gpt => {
+                        let gpt = cfg.providers.gpt.get_or_insert_with(|| {
+                            config::GptConfig {
+                                api_key: None,
+                                model: "gpt-4o".into(),
+                                fallback_model: None,
+                                gen_model: "gpt-image-2".into(),
+                                gen_fallback_model: None,
+                                proxy: None,
+                            }
+                        });
+                        gpt.api_key = Some(api_key);
+                    }
+                }
+                cfg.save()?;
+                println!("{provider} api key updated");
+            }
+        },
+        Commands::Model { provider, model } => {
+            let pt = ProviderType::parse(&provider)?;
             let mut cfg = config::VigenConfig::load()?;
-            let google = cfg.providers.google.get_or_insert_with(|| config::GoogleConfig {
-                api_key: None,
-                model: "gemini-2.0-flash".into(),
-                proxy: None,
-                project: None,
-            });
-            google.api_key = Some(api_key);
+            match pt {
+                ProviderType::Google => {
+                    let google = cfg.providers.google.get_or_insert_with(|| {
+                        config::GoogleConfig {
+                            api_key: None,
+                            model: String::new(),
+                            fallback_model: None,
+                            proxy: None,
+                            project: None,
+                        }
+                    });
+                    google.model = model;
+                }
+                ProviderType::Gpt => {
+                    let gpt = cfg.providers.gpt.get_or_insert_with(|| config::GptConfig {
+                        api_key: None,
+                        model: String::new(),
+                        fallback_model: None,
+                        gen_model: "gpt-image-2".into(),
+                        gen_fallback_model: None,
+                        proxy: None,
+                    });
+                    gpt.model = model;
+                }
+            }
             cfg.save()?;
-            println!("api key updated");
+            println!("{provider} model updated");
         }
-        ConfigAction::SetProxy { url } => {
+        Commands::GenModel { provider, model } => {
+            let pt = ProviderType::parse(&provider)?;
+            let mut cfg = config::VigenConfig::load()?;
+            match pt {
+                ProviderType::Gpt => {
+                    let gpt = cfg.providers.gpt.get_or_insert_with(|| config::GptConfig {
+                        api_key: None,
+                        model: "gpt-4o".into(),
+                        fallback_model: None,
+                        gen_model: String::new(),
+                        gen_fallback_model: None,
+                        proxy: None,
+                    });
+                    gpt.gen_model = model;
+                }
+                ProviderType::Google => {
+                    anyhow::bail!("Google does not support image generation")
+                }
+            }
+            cfg.save()?;
+            println!("{provider} gen model updated");
+        }
+        Commands::Models { provider } => {
+            let pt = ProviderType::parse(&provider)?;
+            let cfg = config::VigenConfig::load()?;
+            let models = providers::list_models(pt, &cfg).await?;
+            for (name, display) in &models {
+                if let Some(d) = display {
+                    println!("{name}  ({d})");
+                } else {
+                    println!("{name}");
+                }
+            }
+            if models.is_empty() {
+                println!("No models found");
+            }
+        }
+        Commands::Proxy { url } => {
             let mut cfg = config::VigenConfig::load()?;
             cfg.proxy = Some(config::ProxyConfig { url });
             cfg.save()?;
             println!("proxy updated");
         }
-        ConfigAction::SetModel { model } => {
+        Commands::Project { project_id } => {
             let mut cfg = config::VigenConfig::load()?;
-            let google = cfg.providers.google.get_or_insert_with(|| config::GoogleConfig {
-                api_key: None,
-                model: String::new(),
-                proxy: None,
-                project: None,
-            });
-            google.model = model;
-            cfg.save()?;
-            println!("model updated");
-        }
-        ConfigAction::SetProject { project_id } => {
-            let mut cfg = config::VigenConfig::load()?;
-            let google = cfg.providers.google.get_or_insert_with(|| config::GoogleConfig {
-                api_key: None,
-                model: String::new(),
-                proxy: None,
-                project: None,
+            let google = cfg.providers.google.get_or_insert_with(|| {
+                config::GoogleConfig {
+                    api_key: None,
+                    model: String::new(),
+                    fallback_model: None,
+                    proxy: None,
+                    project: None,
+                }
             });
             google.project = Some(project_id);
             cfg.save()?;
             println!("project updated");
         }
-        ConfigAction::ListModels => {
-            let cfg = config::VigenConfig::load()?;
-    let provider = providers::google::GoogleProvider::from_config(&cfg)?;
-            let models = provider.list_models().await?;
-            for m in models {
-                let name = m.name.strip_prefix("models/").unwrap_or(&m.name);
-                let label = m
-                    .display_name
-                    .as_deref()
-                    .unwrap_or(name);
-                let vision = m
-                    .supported_generation_methods
-                    .contains(&"generateContent".to_string());
-                let token_info = match (m.input_token_limit, m.output_token_limit) {
-                    (Some(i), Some(o)) => format!(" in:{i} out:{o}"),
-                    _ => String::new(),
-                };
-                let marker = if vision { " [vision]" } else { "" };
-                println!("{name}");
-                println!("  {label}{marker}{token_info}");
-                if let Some(ref desc) = m.description {
-                    println!("  {desc}");
-                }
-                println!();
+        Commands::Config { action } => match action {
+            ConfigAction::Show => {
+                let cfg = config::VigenConfig::load()?;
+                let text = toml::to_string_pretty(&cfg)?;
+                println!("{text}");
             }
-        }
+            ConfigAction::Path => {
+                println!("{}", config::VigenConfig::config_path().display());
+            }
+            ConfigAction::Init => {
+                let path = config::VigenConfig::config_path();
+                if path.exists() {
+                    anyhow::bail!("config already exists at {}", path.display());
+                }
+                config::VigenConfig::default().save()?;
+                println!("created {}", path.display());
+            }
+        },
     }
-    Ok(())
-}
-
-async fn cmd_login() -> Result<(), anyhow::Error> {
-    let mut cfg = config::VigenConfig::load()?;
-
-    let proxy = cfg.proxy.as_ref().map(|p| p.url.as_str());
-
-    let result = auth::google_login(proxy).await?;
-
-    let auth_cfg = cfg.auth.get_or_insert_with(config::AuthConfig::default);
-    auth_cfg.google = Some(result);
-    cfg.save()?;
-
-    println!("Login successful! Tokens saved.");
     Ok(())
 }
 
@@ -223,13 +353,12 @@ fn detect_mime(path: &str) -> Result<&'static str, anyhow::Error> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("");
-
     match ext.to_lowercase().as_str() {
         "png" => Ok("image/png"),
         "jpg" | "jpeg" => Ok("image/jpeg"),
-        "gif" => Ok("image/gif"),
         "webp" => Ok("image/webp"),
+        "gif" => Ok("image/gif"),
         "bmp" => Ok("image/bmp"),
-        other => anyhow::bail!("unsupported image format: .{other}"),
+        _ => anyhow::bail!("unsupported image format: .{ext} (png, jpg, webp, gif, bmp)"),
     }
 }
