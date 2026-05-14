@@ -13,6 +13,7 @@ use crate::pkce::{
 };
 
 use super::VisionProvider;
+use super::http::send_with_retry;
 
 const BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -109,9 +110,13 @@ impl GoogleProvider {
         let proxy_url = resolve_proxy(config.proxy.as_deref(), full.proxy.as_ref());
         let mut builder = Client::builder();
         if let Some(ref url) = proxy_url {
-            builder = builder.proxy(reqwest::Proxy::all(url)?);
+            builder = builder.proxy(
+                reqwest::Proxy::all(url).map_err(|e| VigenError::http("Google proxy", e))?,
+            );
         }
-        let client = builder.build()?;
+        let client = builder
+            .build()
+            .map_err(|e| VigenError::http("Google HTTP client", e))?;
 
         Ok(Self {
             api_key,
@@ -158,18 +163,28 @@ impl VisionProvider for GoogleProvider {
         };
 
         let url = self.make_url(&format!("/models/{}:generateContent", self.model));
-        let response = self.client.post(&url).json(&request).send().await?;
+        let response = send_with_retry(
+            self.client.post(&url).json(&request),
+            "Google image analysis",
+        )
+        .await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await?;
+            let body = response
+                .text()
+                .await
+                .map_err(|e| VigenError::http("Google image analysis error body", e))?;
             return Err(VigenError::ApiError {
                 status,
                 message: body,
             });
         }
 
-        let gemini_response: GeminiResponse = response.json().await?;
+        let gemini_response: GeminiResponse = response
+            .json()
+            .await
+            .map_err(|e| VigenError::http("Google image analysis response JSON", e))?;
         let text = gemini_response
             .candidates
             .first()
@@ -186,22 +201,25 @@ impl VisionProvider for GoogleProvider {
 
 impl GoogleProvider {
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, VigenError> {
-        let response = self
-            .client
-            .get(self.make_url("/models"))
-            .send()
+        let response = send_with_retry(self.client.get(self.make_url("/models")), "Google model list")
             .await?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await?;
+            let body = response
+                .text()
+                .await
+                .map_err(|e| VigenError::http("Google model list error body", e))?;
             return Err(VigenError::ApiError {
                 status,
                 message: body,
             });
         }
 
-        let list: ModelsListResponse = response.json().await?;
+        let list: ModelsListResponse = response
+            .json()
+            .await
+            .map_err(|e| VigenError::http("Google model list response JSON", e))?;
         Ok(list.models)
     }
 }
@@ -308,12 +326,12 @@ pub async fn login(config: &mut VigenConfig, proxy: Option<&str>) -> Result<(), 
         ("grant_type", "authorization_code"),
     ];
 
-    let response = client
-        .post(TOKEN_URL)
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| VigenError::OAuth(format!("token request: {e}")))?;
+    let response = send_with_retry(
+        client.post(TOKEN_URL).form(&params),
+        "Google OAuth token exchange",
+    )
+    .await
+    .map_err(|e| VigenError::OAuth(e.to_string()))?;
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
