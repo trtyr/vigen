@@ -1,5 +1,6 @@
 pub mod gpt;
 pub mod google;
+mod http;
 
 use async_trait::async_trait;
 
@@ -19,7 +20,7 @@ pub trait VisionProvider: Send + Sync {
 #[async_trait]
 pub trait ImageGenProvider: Send + Sync {
     async fn generate_image(
-        &self,
+        &mut self,
         prompt: &str,
         size: &str,
         n: u8,
@@ -67,7 +68,7 @@ pub async fn analyze_image(
 }
 
 pub async fn generate_image(
-    config: &VigenConfig,
+    config: &mut VigenConfig,
     prompt: &str,
     size: &str,
     n: u8,
@@ -86,8 +87,10 @@ pub async fn generate_image(
     let mut last_err = None;
     for model in &models {
         let result = {
-            let p = gpt::GptProvider::from_config_with_model(config, model)?;
-            p.generate_image(prompt, size, n).await
+            let mut p = gpt::GptProvider::from_config_with_model(config, model)?;
+            let result = p.generate_image(prompt, size, n).await;
+            p.write_auth_if_dirty(config)?;
+            result
         };
         match result {
             Ok(r) => return Ok(r),
@@ -113,7 +116,7 @@ pub async fn login(
 ) -> Result<(), VigenError> {
     match provider {
         ProviderType::Google => google::login(config, proxy).await,
-        ProviderType::Gpt => gpt::login_with_api_key(config),
+        ProviderType::Gpt => gpt::login_oauth(config, proxy).await,
     }
 }
 

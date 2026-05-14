@@ -105,7 +105,9 @@ fn default_gpt_model() -> String {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GptAuth {
+    pub access_token: String,
     pub refresh_token: String,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -115,6 +117,12 @@ pub struct GptConfig {
 
     #[serde(default = "default_gpt_model")]
     pub model: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_endpoint: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_model: Option<String>,
@@ -181,6 +189,8 @@ mod tests {
         GptConfig {
             api_key: Some("c-key-456".into()),
             model: "gpt-image-2".into(),
+            base_url: Some("https://api.openai.com".into()),
+            image_endpoint: Some("/v1/images/generations".into()),
             fallback_model: None,
             proxy: None,
         }
@@ -215,6 +225,8 @@ mod tests {
         let c = round.providers.gpt.unwrap();
         assert_eq!(c.api_key.unwrap(), "c-key-456");
         assert_eq!(c.model, "gpt-image-2");
+        assert_eq!(c.base_url.unwrap(), "https://api.openai.com");
+        assert_eq!(c.image_endpoint.unwrap(), "/v1/images/generations");
         assert!(c.fallback_model.is_none());
     }
 
@@ -251,7 +263,9 @@ mod tests {
                 refresh_token: "rtok".into(),
             }),
             gpt: Some(GptAuth {
+                access_token: "atok".into(),
                 refresh_token: "ctok".into(),
+                expires_at: 9999999999,
             }),
         });
         let toml_str = toml::to_string_pretty(&cfg).unwrap();

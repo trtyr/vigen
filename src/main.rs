@@ -151,8 +151,8 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
             n,
             output,
         } => {
-            let cfg = config::VigenConfig::load()?;
-            let images = providers::generate_image(&cfg, &prompt, &size, n).await?;
+            let mut cfg = config::VigenConfig::load()?;
+            let images = providers::generate_image(&mut cfg, &prompt, &size, n).await?;
             for (i, b64) in images.iter().enumerate() {
                 let data = base64::engine::general_purpose::STANDARD
                     .decode(b64)
@@ -197,6 +197,8 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                             config::GptConfig {
                                 api_key: None,
                                 model: "gpt-image-2".into(),
+                                base_url: None,
+                                image_endpoint: None,
                                 fallback_model: None,
                                 proxy: None,
                             }
@@ -228,6 +230,8 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                     let gpt = cfg.providers.gpt.get_or_insert_with(|| config::GptConfig {
                         api_key: None,
                         model: String::new(),
+                        base_url: None,
+                        image_endpoint: None,
                         fallback_model: None,
                         proxy: None,
                     });
