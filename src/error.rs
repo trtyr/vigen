@@ -8,8 +8,11 @@ pub enum VigenError {
     #[error("config error: {0}")]
     Config(String),
 
-    #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
+    #[error("http error during {context}: {source}")]
+    Http {
+        context: String,
+        source: reqwest::Error,
+    },
 
     #[error("api error (status {status}): {message}")]
     ApiError { status: u16, message: String },
@@ -22,6 +25,13 @@ pub enum VigenError {
 }
 
 impl VigenError {
+    pub fn http(context: impl Into<String>, source: reqwest::Error) -> Self {
+        Self::Http {
+            context: context.into(),
+            source,
+        }
+    }
+
     pub fn is_fatal(&self) -> bool {
         match self {
             VigenError::Config(_) => true,
@@ -31,7 +41,7 @@ impl VigenError {
                 matches!(status, 401 | 403)
             }
             VigenError::Io(_) => false,
-            VigenError::Http(_) => false,
+            VigenError::Http { .. } => false,
         }
     }
 }
@@ -104,8 +114,13 @@ mod tests {
     async fn test_from_reqwest_error() {
         let client = reqwest::Client::new();
         let err = client.get("not-a-url://").send().await.unwrap_err();
-        let ve: VigenError = err.into();
-        matches!(ve, VigenError::Http(_));
+        let ve = VigenError::Http {
+            context: "test request".into(),
+            source: err,
+        };
+        let message = ve.to_string();
+        assert!(message.contains("test request"));
+        assert!(message.contains("http error"));
     }
 
     #[test]
@@ -161,13 +176,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_not_fatal_http() {
-        let e = VigenError::Http(
-            reqwest::Client::new()
+        let e = VigenError::Http {
+            context: "test request".into(),
+            source: reqwest::Client::new()
                 .get("not-a-url://")
                 .send()
                 .await
                 .unwrap_err(),
-        );
+        };
         assert!(!e.is_fatal());
     }
 }
