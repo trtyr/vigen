@@ -7,7 +7,7 @@ Vision + Gen — CLI tool for text-only models to access vision AI and image gen
 
 ## Stack
 
-Rust (edition 2021), tokio, reqwest, clap, serde, base64, sha2, dirs, webbrowser, url.
+Rust (edition 2021), tokio, reqwest, clap, serde, base64, sha2, dirs, webbrowser, url, image.
 
 ## Structure
 
@@ -31,6 +31,7 @@ Microkernel: each provider module is self-contained (auth + API + config). `mod.
 | Task | Location | Notes |
 |------|----------|-------|
 | Add CLI command | `src/main.rs` | clap derive, dispatch to providers/mod |
+| Change CLI behavior (format, stdin, error hints) | `src/main.rs` | format conversion (image crate), error_hint(), stdin MIME detection |
 | Add provider | `src/providers/<name>.rs` + register in `mod.rs` | impl VisionProvider or ImageGenProvider + login functions + config struct |
 | Change config schema | `src/config.rs` | add provider config struct, keep ProviderType in config.rs |
 | Change Google provider | `src/providers/google.rs` | Gemini vision API, OAuth, model listing |
@@ -51,12 +52,15 @@ Microkernel: each provider module is self-contained (auth + API + config). `mod.
 - **Config** — XDG `~/.config/vigen/config.toml`, TOML. Sections: `[proxy]`, `[providers.google]`, `[providers.gpt]`, `[auth]`.
 - **Custom endpoint** — Gpt supports custom `base_url` and `image_endpoint` for third-party OpenAI-compatible APIs.
 - **Retry** — all provider HTTP calls use `send_with_retry` (3 attempts, exponential backoff) for connect/timeout/5xx/429 errors.
+- **Gen --reference** — reads reference image → Gemini analyzes style (colors, composition, lighting) → merges into prompt before sending to GPT.
+- **Format conversion** — `src/main.rs` handles PNG → JPEG/WebP via the `image` crate. Provider returns base64, main.rs decodes and converts.
+- **Error hints** — `error_hint()` in `src/main.rs` maps `VigenError` variants to actionable CLI suggestions (e.g. "run `vigen auth key google <key>`").
 
 ## Key commands
 
 ```
-vigen see -i <path> [-p <prompt>]
-vigen gen -p <prompt> [--size <s>] [-n <n>] [-o <dir>]
+vigen see -i <path> [-p <prompt>] [-v]          # or pipe: cat img.png | vigen see
+vigen gen -p <prompt> [--size <s>] [-n <n>] [-o <dir>] [--format png|jpg|webp] [--stdout] [-r <ref>] [-v]
 vigen config show | path | init
 vigen auth key <google|gpt> <key>
 vigen model <google|gpt> <model>
