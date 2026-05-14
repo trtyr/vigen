@@ -56,6 +56,8 @@ fallback_model = "gemini-1.5-flash"  # 可选，主模型失败时自动切换
 [providers.gpt]
 api_key = "sk-xxx"
 model = "gpt-image-2"
+base_url = "https://api.openai.com"          # 可选，OpenAI-compatible 服务可改成自己的 base URL
+image_endpoint = "/v1/images/generations"   # 可选，也支持 /v1/chat/completions
 ```
 
 ## 设计原则
