@@ -1,6 +1,6 @@
 [package]
 name = "vigen"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Vision + Gen — CLI tool for text-only models to access vision AI (Google Gemini) and image generation (OpenAI)"
 license = "MIT"
@@ -25,3 +25,4 @@ url = "2"
 webbrowser = "1"
 sha2 = "0.10"
 rand = "0.8"
+image = "0.25"
