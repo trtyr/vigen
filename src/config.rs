@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::PathBuf;
 
 use crate::error::VigenError;
@@ -77,10 +77,29 @@ pub struct GoogleAuth {
     pub refresh_token: String,
 }
 
+fn deserialize_api_keys<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    OneOrMany::deserialize(d).map(|v| match v {
+        OneOrMany::One(s) if s.is_empty() => vec![],
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GoogleConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_api_keys",
+        alias = "api_key",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub api_keys: Vec<String>,
 
     #[serde(default = "default_google_model")]
     pub model: String,
@@ -177,7 +196,7 @@ mod tests {
 
     fn sample_google_config() -> GoogleConfig {
         GoogleConfig {
-            api_key: Some("g-key-123".into()),
+            api_keys: vec!["g-key-123".into()],
             model: "gemini-2.0-flash".into(),
             fallback_model: Some("gemini-1.5-flash".into()),
             proxy: None,
@@ -211,7 +230,7 @@ mod tests {
         let toml_str = toml::to_string_pretty(&cfg).unwrap();
         let round: VigenConfig = toml::from_str(&toml_str).unwrap();
         let g = round.providers.google.unwrap();
-        assert_eq!(g.api_key.unwrap(), "g-key-123");
+        assert_eq!(g.api_keys, vec!["g-key-123"]);
         assert_eq!(g.model, "gemini-2.0-flash");
         assert_eq!(g.fallback_model.unwrap(), "gemini-1.5-flash");
     }
@@ -315,5 +334,52 @@ mod tests {
         let s = path.to_string_lossy();
         assert!(s.contains("vigen"), "path must contain vigen: {s}");
         assert!(s.ends_with("config.toml"), "path must end with config.toml: {s}");
+    }
+
+    #[test]
+    fn test_google_api_keys_single_string() {
+        let toml_str = r#"
+[providers.google]
+api_key = "sk-single"
+model = "gemini-2.0-flash"
+"#;
+        let cfg: VigenConfig = toml::from_str(toml_str).unwrap();
+        let g = cfg.providers.google.unwrap();
+        assert_eq!(g.api_keys, vec!["sk-single"]);
+    }
+
+    #[test]
+    fn test_google_api_keys_array() {
+        let toml_str = r#"
+[providers.google]
+api_keys = ["key-a", "key-b", "key-c"]
+model = "gemini-2.0-flash"
+"#;
+        let cfg: VigenConfig = toml::from_str(toml_str).unwrap();
+        let g = cfg.providers.google.unwrap();
+        assert_eq!(g.api_keys, vec!["key-a", "key-b", "key-c"]);
+    }
+
+    #[test]
+    fn test_google_api_keys_default_empty() {
+        let toml_str = r#"
+[providers.google]
+model = "gemini-2.0-flash"
+"#;
+        let cfg: VigenConfig = toml::from_str(toml_str).unwrap();
+        let g = cfg.providers.google.unwrap();
+        assert!(g.api_keys.is_empty());
+    }
+
+    #[test]
+    fn test_google_api_keys_empty_string() {
+        let toml_str = r#"
+[providers.google]
+api_key = ""
+model = "gemini-2.0-flash"
+"#;
+        let cfg: VigenConfig = toml::from_str(toml_str).unwrap();
+        let g = cfg.providers.google.unwrap();
+        assert!(g.api_keys.is_empty());
     }
 }

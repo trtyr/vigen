@@ -118,13 +118,14 @@ enum AuthAction {
         provider: String,
     },
 
-    /// Set API key directly
+    /// Set API key directly (appends for multi-key providers)
     Key {
         /// Provider name (google, gpt)
         provider: String,
 
-        /// API key
-        api_key: String,
+        /// API key(s) to add. For google, multiple keys are supported and will be added to the rotation pool.
+        #[arg(num_args = 1..)]
+        api_keys: Vec<String>,
     },
 }
 
@@ -281,21 +282,28 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                 providers::login(pt, &mut cfg, proxy.as_deref()).await?;
                 println!("Login successful!");
             }
-            AuthAction::Key { provider, api_key } => {
+            AuthAction::Key {
+                provider,
+                api_keys,
+            } => {
                 let pt = ProviderType::parse(&provider)?;
                 let mut cfg = config::VigenConfig::load()?;
                 match pt {
                     ProviderType::Google => {
                         let google = cfg.providers.google.get_or_insert_with(|| {
                             config::GoogleConfig {
-                                api_key: None,
+                                api_keys: vec![],
                                 model: "gemini-2.0-flash".into(),
                                 fallback_model: None,
                                 proxy: None,
                                 project: None,
                             }
                         });
-                        google.api_key = Some(api_key);
+                        for key in api_keys {
+                            if !google.api_keys.contains(&key) {
+                                google.api_keys.push(key);
+                            }
+                        }
                     }
                     ProviderType::Gpt => {
                         let gpt = cfg.providers.gpt.get_or_insert_with(|| {
@@ -308,11 +316,11 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                                 proxy: None,
                             }
                         });
-                        gpt.api_key = Some(api_key);
+                        gpt.api_key = api_keys.last().cloned();
                     }
                 }
                 cfg.save()?;
-                println!("{provider} api key updated");
+                println!("{provider} api key(s) updated");
             }
         },
         Commands::Model { provider, model } => {
@@ -322,7 +330,7 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                 ProviderType::Google => {
                     let google = cfg.providers.google.get_or_insert_with(|| {
                         config::GoogleConfig {
-                            api_key: None,
+                            api_keys: vec![],
                             model: String::new(),
                             fallback_model: None,
                             proxy: None,
@@ -371,7 +379,7 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
             let mut cfg = config::VigenConfig::load()?;
             let google = cfg.providers.google.get_or_insert_with(|| {
                 config::GoogleConfig {
-                    api_key: None,
+                    api_keys: vec![],
                     model: String::new(),
                     fallback_model: None,
                     proxy: None,

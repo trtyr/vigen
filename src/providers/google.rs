@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
@@ -89,9 +90,10 @@ pub struct ModelInfo {
 }
 
 pub struct GoogleProvider {
-    api_key: String,
+    api_keys: Vec<String>,
     model: String,
     client: Client,
+    key_index: AtomicUsize,
 }
 
 impl GoogleProvider {
@@ -102,10 +104,10 @@ impl GoogleProvider {
             .clone()
             .ok_or_else(|| VigenError::ProviderNotConfigured("google".into()))?;
 
-        let api_key = config
-            .api_key
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| VigenError::ProviderNotConfigured("google api_key".into()))?;
+        let api_keys = config.api_keys;
+        if api_keys.is_empty() {
+            return Err(VigenError::ProviderNotConfigured("google api_key".into()));
+        }
 
         let proxy_url = resolve_proxy(config.proxy.as_deref(), full.proxy.as_ref());
         let mut builder = Client::builder();
@@ -119,9 +121,10 @@ impl GoogleProvider {
             .map_err(|e| VigenError::http("Google HTTP client", e))?;
 
         Ok(Self {
-            api_key,
+            api_keys,
             model: config.model,
             client,
+            key_index: AtomicUsize::new(0),
         })
     }
 
@@ -131,15 +134,13 @@ impl GoogleProvider {
         Ok(p)
     }
 
-    fn make_url(&self, path: &str) -> String {
-        format!("{BASE_URL}{path}?key={}", self.api_key)
+    fn make_url_for_key(&self, key: &str, path: &str) -> String {
+        format!("{BASE_URL}{path}?key={key}")
     }
-}
 
-#[async_trait]
-impl VisionProvider for GoogleProvider {
-    async fn analyze_image(
+    async fn analyze_with_key(
         &self,
+        key: &str,
         image_data: &[u8],
         mime_type: &str,
         prompt: &str,
@@ -162,7 +163,7 @@ impl VisionProvider for GoogleProvider {
             }],
         };
 
-        let url = self.make_url(&format!("/models/{}:generateContent", self.model));
+        let url = self.make_url_for_key(key, &format!("/models/{}:generateContent", self.model));
         let response = send_with_retry(
             self.client.post(&url).json(&request),
             "Google image analysis",
@@ -199,9 +200,49 @@ impl VisionProvider for GoogleProvider {
     }
 }
 
+#[async_trait]
+impl VisionProvider for GoogleProvider {
+    async fn analyze_image(
+        &self,
+        image_data: &[u8],
+        mime_type: &str,
+        prompt: &str,
+    ) -> Result<String, VigenError> {
+        let n = self.api_keys.len();
+        let start = self.key_index.load(Ordering::Relaxed) % n;
+        let mut last_err = None;
+
+        for offset in 0..n {
+            let idx = (start + offset) % n;
+            let key = &self.api_keys[idx];
+            match self
+                .analyze_with_key(key, image_data, mime_type, prompt)
+                .await
+            {
+                Ok(result) => {
+                    self.key_index.store(idx + 1, Ordering::Relaxed);
+                    return Ok(result);
+                }
+                Err(e) => {
+                    if e.is_fatal() {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| VigenError::ApiError {
+            status: 0,
+            message: "all api keys exhausted".into(),
+        }))
+    }
+}
+
 impl GoogleProvider {
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, VigenError> {
-        let response = send_with_retry(self.client.get(self.make_url("/models")), "Google model list")
+        let key = self.api_keys.first().map(|s| s.as_str()).unwrap_or("");
+        let response = send_with_retry(self.client.get(self.make_url_for_key(key, "/models")), "Google model list")
             .await?;
 
         if !response.status().is_success() {
