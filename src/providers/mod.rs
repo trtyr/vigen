@@ -4,8 +4,23 @@ mod http;
 
 use async_trait::async_trait;
 
-use crate::config::{ProviderType, VigenConfig};
+use crate::config::{resolve_proxy, ProviderType, VigenConfig};
 use crate::error::VigenError;
+
+macro_rules! try_endpoint {
+    ($last_err:expr, $label:expr, $result:expr) => {
+        match $result {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                eprintln!("[vigen] {} failed: {}", $label, e);
+                if e.is_fatal() {
+                    return Err(e);
+                }
+                $last_err = Some(e);
+            }
+        }
+    };
+}
 
 #[async_trait]
 pub trait VisionProvider: Send + Sync {
@@ -78,10 +93,16 @@ pub async fn generate_image(
         .gpt
         .as_ref()
         .ok_or_else(|| VigenError::ProviderNotConfigured("gpt".into()))?;
+    let model = c.model.clone();
+    let fallback_model = c.fallback_model.clone();
+    let base_url = c.base_url.clone();
+    let image_endpoint = c.image_endpoint.clone();
+    let proxy = c.proxy.clone();
+    let fallbacks = c.fallbacks.clone();
 
-    let mut models = vec![c.model.clone()];
-    if let Some(ref fb) = c.fallback_model {
-        models.push(fb.clone());
+    let mut models = vec![model.clone()];
+    if let Some(fb) = fallback_model {
+        models.push(fb);
     }
 
     let mut last_err = None;
@@ -92,15 +113,28 @@ pub async fn generate_image(
             p.write_auth_if_dirty(config)?;
             result
         };
-        match result {
-            Ok(r) => return Ok(r),
-            Err(e) => {
-                if e.is_fatal() {
-                    return Err(e);
-                }
-                last_err = Some(e);
-            }
-        }
+        try_endpoint!(last_err, format!("primary ({model})"), result);
+    }
+
+    for (i, fallback) in fallbacks.iter().enumerate() {
+        let fallback_model = fallback.model.as_deref().unwrap_or(&model).to_string();
+        let fallback_base_url = fallback.base_url.as_deref().or(base_url.as_deref());
+        let fallback_image_endpoint = fallback
+            .image_endpoint
+            .as_deref()
+            .or(image_endpoint.as_deref());
+        let proxy_url = resolve_proxy(proxy.as_deref(), config.proxy.as_ref());
+        let result = {
+            let mut p = gpt::GptProvider::from_parts(
+                fallback.api_key.clone(),
+                fallback_model,
+                fallback_base_url,
+                fallback_image_endpoint,
+                proxy_url.as_deref(),
+            )?;
+            p.generate_image(prompt, size, n).await
+        };
+        try_endpoint!(last_err, format!("fallback #{}", i + 1), result);
     }
 
     Err(last_err.unwrap_or_else(|| VigenError::ApiError {

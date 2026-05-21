@@ -130,6 +130,17 @@ pub struct GptAuth {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GptFallback {
+    pub api_key: String,
+
+    pub base_url: Option<String>,
+
+    pub image_endpoint: Option<String>,
+
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GptConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
@@ -148,11 +159,20 @@ pub struct GptConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<GptFallback>,
 }
 
 impl VigenConfig {
     pub fn config_path() -> PathBuf {
-        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+        let base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".config")
+            });
         base.join("vigen").join("config.toml")
     }
 
@@ -212,6 +232,7 @@ mod tests {
             image_endpoint: Some("/v1/images/generations".into()),
             fallback_model: None,
             proxy: None,
+            fallbacks: vec![],
         }
     }
 

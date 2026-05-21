@@ -314,6 +314,7 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                                 image_endpoint: None,
                                 fallback_model: None,
                                 proxy: None,
+                                fallbacks: vec![],
                             }
                         });
                         gpt.api_key = api_keys.last().cloned();
@@ -347,6 +348,7 @@ async fn run(cli: Cli) -> Result<(), anyhow::Error> {
                         image_endpoint: None,
                         fallback_model: None,
                         proxy: None,
+                        fallbacks: vec![],
                     });
                     gpt.model = model;
                 }

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::json;
@@ -92,6 +93,33 @@ impl GptProvider {
         Ok(p)
     }
 
+    pub fn from_parts(
+        api_key: String,
+        model: String,
+        base_url: Option<&str>,
+        image_endpoint: Option<&str>,
+        proxy_url: Option<&str>,
+    ) -> Result<Self, VigenError> {
+        let mut builder = Client::builder();
+        if let Some(url) = proxy_url {
+            builder = builder
+                .proxy(reqwest::Proxy::all(url).map_err(|e| VigenError::http("GPT proxy", e))?);
+        }
+        let client = builder
+            .build()
+            .map_err(|e| VigenError::http("GPT HTTP client", e))?;
+        Ok(Self {
+            api_key,
+            model,
+            base_url: normalized_base_url(base_url),
+            image_endpoint: normalized_endpoint(image_endpoint),
+            client,
+            refresh_token: None,
+            expires_at: i64::MAX,
+            auth_dirty: false,
+        })
+    }
+
     async fn refresh_access_token(&mut self) -> Result<(), VigenError> {
         let rt = self
             .refresh_token
@@ -173,6 +201,55 @@ fn extract_base64_images(resp: &serde_json::Value) -> Vec<String> {
     let mut images = Vec::new();
     collect_base64_images(resp, &mut images);
     images
+}
+
+fn extract_image_urls(resp: &serde_json::Value) -> Vec<String> {
+    let mut urls = Vec::new();
+    collect_strings(resp, &mut urls);
+    urls
+}
+
+fn collect_strings(value: &serde_json::Value, urls: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) => {
+            for url in extract_urls_from_text(s) {
+                urls.push(url);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values() {
+                collect_strings(v, urls);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_strings(v, urls);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn extract_urls_from_text(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("![") {
+        let after = &rest[start..];
+        if let Some(paren_start) = after.find("](") {
+            let url_start = start + paren_start + 2;
+            let remaining = &text[url_start..];
+            if let Some(end) = remaining.find(')') {
+                let url = remaining[..end].to_string();
+                if url.starts_with("http") {
+                    urls.push(url);
+                }
+                rest = &remaining[end..];
+                continue;
+            }
+        }
+        rest = &after[2..];
+    }
+    urls
 }
 
 fn collect_base64_images(value: &serde_json::Value, images: &mut Vec<String>) {
@@ -284,13 +361,36 @@ impl super::ImageGenProvider for GptProvider {
             .await
             .map_err(|e| VigenError::http("GPT image generation response JSON", e))?;
         let images = extract_base64_images(&resp);
-        if images.is_empty() {
+        if !images.is_empty() {
+            return Ok(images);
+        }
+        let urls = extract_image_urls(&resp);
+        if urls.is_empty() {
             return Err(VigenError::ApiError {
                 status: 200,
                 message: "no images in response".into(),
             });
         }
-        Ok(images)
+        let mut downloaded = Vec::with_capacity(urls.len());
+        for url in &urls {
+            let resp = send_with_retry(
+                self.client.get(url),
+                "GPT image download",
+            )
+            .await?;
+            if !resp.status().is_success() {
+                return Err(VigenError::ApiError {
+                    status: resp.status().as_u16(),
+                    message: format!("failed to download image from {url}"),
+                });
+            }
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|e| VigenError::http("GPT image download body", e))?;
+            downloaded.push(base64::engine::general_purpose::STANDARD.encode(&bytes));
+        }
+        Ok(downloaded)
     }
 }
 
@@ -312,6 +412,7 @@ pub fn login_with_api_key(config: &mut VigenConfig) -> Result<(), VigenError> {
         image_endpoint: None,
         fallback_model: None,
         proxy: None,
+        fallbacks: vec![],
     });
     gpt_cfg.api_key = Some(api_key);
     config.save()?;
@@ -446,6 +547,7 @@ pub async fn login_oauth(
         image_endpoint: None,
         fallback_model: None,
         proxy: None,
+        fallbacks: vec![],
     });
     config.save()
 }

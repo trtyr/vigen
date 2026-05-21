@@ -2,7 +2,7 @@
 
 Vision + Gen — CLI tool for text-only models to access vision AI and image generation.
 
-**Updated:** 2026-05-14
+**Updated:** 2026-05-21
 **Branch:** master
 
 ## Stack
@@ -46,14 +46,15 @@ Microkernel: each provider module is self-contained (auth + API + config). `mod.
 - **`VisionProvider` trait** — `async fn analyze_image(&self, image_data: &[u8], mime_type: &str, prompt: &str) -> Result<String>`. Only `GoogleProvider` implements it.
 - **`ImageGenProvider` trait** — `async fn generate_image(&mut self, prompt: &str, size: &str, n: u8) -> Result<Vec<String>>`. Only `GptProvider` implements it. Mutable for OAuth token refresh.
 - **`ProviderType` enum** — Google / Gpt. `parse(s)` for CLI strings. Lives in config.rs with serde as TOML string.
-- **Fallback** — within-provider only: main model → fallback_model. Fatal errors short-circuit.
+- **Fallback** — two levels: (1) within-endpoint: main model → fallback_model, (2) across-endpoints: primary → fallbacks list. Each fallback has its own api_key, base_url, image_endpoint, model. Non-fatal errors continue to next; fatal errors short-circuit.
 - **Auth modes** — API key (priority) > OAuth Bearer token. Gpt uses Codex client OAuth. Google uses standard Google Cloud OAuth. No user-provided client secrets needed.
 - **Proxy** — global `proxy.url` in config, per-provider override. HTTP and SOCKS5 via reqwest.
-- **Config** — XDG `~/.config/vigen/config.toml`, TOML. Sections: `[proxy]`, `[providers.google]`, `[providers.gpt]`, `[auth]`.
-- **Custom endpoint** — Gpt supports custom `base_url` and `image_endpoint` for third-party OpenAI-compatible APIs.
+- **Config** — `$XDG_CONFIG_HOME/vigen/config.toml` (defaults to `~/.config/vigen/config.toml`), TOML. Sections: `[proxy]`, `[providers.google]`, `[providers.gpt]`, `[auth]`.
+- **Custom endpoint** — Gpt supports custom `base_url` and `image_endpoint` for third-party OpenAI-compatible APIs. Multiple endpoints via `[[providers.gpt.fallbacks]]` array in config.
 - **Retry** — all provider HTTP calls use `send_with_retry` (3 attempts, exponential backoff) for connect/timeout/5xx/429 errors.
 - **Gen --reference** — reads reference image → Gemini analyzes style (colors, composition, lighting) → merges into prompt before sending to GPT.
 - **Format conversion** — `src/main.rs` handles PNG → JPEG/WebP via the `image` crate. Provider returns base64, main.rs decodes and converts.
+- **URL image extraction** — when provider returns markdown image links (`![...](url)`) instead of base64, GptProvider auto-downloads the image and converts to base64. Supports any OpenAI-compatible API that returns URL-based responses.
 - **Error hints** — `error_hint()` in `src/main.rs` maps `VigenError` variants to actionable CLI suggestions (e.g. "run `vigen auth key google <key>`").
 
 ## Key commands
