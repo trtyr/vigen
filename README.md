@@ -12,6 +12,8 @@
 
 A CLI tool built for AI agents, terminal enthusiasts, and anyone who wants vision capabilities without leaving the command line.
 
+English · [中文](README_CN.md)
+
 </div>
 
 ---
